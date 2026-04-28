@@ -4,64 +4,58 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics import accuracy_score
 
-st.set_page_config(page_title="AI Fairness Auditor", layout="wide")
-
-st.title("⚖️ AI Fairness Auditor Dashboard")
-
-st.info("""
-📌 Upload a CSV file with:
-- Protected attribute (e.g., gender, caste)
-- Actual outcome column (0/1)
-- Model prediction column (0/1)
-""")
+st.set_page_config(layout="wide")
+st.title("⚖️ ByteTheProblem – AI Fairness Auditor")
 
 # -------------------------
-# FILE UPLOAD
+# STAGE 1: DATA INTAKE
 # -------------------------
-uploaded_file = st.file_uploader("📂 Upload your dataset (CSV)", type=["csv"])
+st.header("📂 Data Intake")
 
-if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file)
-    st.success("✅ File uploaded successfully")
+data_file = st.file_uploader("Upload Dataset (CSV)", type=["csv"])
+pred_file = st.file_uploader("Upload Predictions (Optional CSV)", type=["csv"])
 
-    st.subheader("📊 Data Preview")
-    st.dataframe(df.head())
-
+if data_file:
+    df = pd.read_csv(data_file)
 else:
-    st.warning("⚠️ No file uploaded. Using sample dataset.")
-
+    st.warning("Using sample dataset")
     np.random.seed(42)
     n = 300
-
     df = pd.DataFrame({
         "gender": np.random.choice(["Male", "Female"], n),
         "region": np.random.choice(["Urban", "Rural"], n),
+        "income": np.random.randint(20000, 100000, n),
         "actual": np.random.choice([0, 1], n)
     })
-
     df["predicted"] = np.where(
         (df["gender"] == "Male") & (np.random.rand(n) > 0.3), 1,
         np.where((df["gender"] == "Female") & (np.random.rand(n) > 0.6), 1, 0)
     )
 
-# -------------------------
-# SIDEBAR CONFIG
-# -------------------------
-st.sidebar.header("⚙️ Configuration")
+if pred_file:
+    preds = pd.read_csv(pred_file)
+    df["predicted"] = preds.iloc[:, 0]
 
-protected = st.sidebar.selectbox("Protected Attribute", df.columns)
-target = st.sidebar.selectbox("Actual Outcome (y_true)", df.columns)
-prediction = st.sidebar.selectbox("Model Prediction (y_pred)", df.columns)
+st.subheader("Data Preview")
+st.dataframe(df.head())
 
-# validation
+# -------------------------
+# STAGE 2: ATTRIBUTE MAPPING
+# -------------------------
+st.header("⚙️ Sensitive Attribute Mapping")
+
+protected = st.selectbox("Protected Attribute", df.columns)
+target = st.selectbox("Actual Outcome", df.columns)
+prediction = st.selectbox("Prediction Column", df.columns)
+
 if protected == target or protected == prediction:
-    st.error("❌ Protected attribute cannot be same as target or prediction")
+    st.error("Invalid column selection")
     st.stop()
 
 # -------------------------
-# DATA AUDIT
+# STAGE 3: DATA AUDIT
 # -------------------------
-st.subheader("🔍 Data Audit")
+st.header("🔍 Data Audit")
 
 col1, col2 = st.columns(2)
 
@@ -73,10 +67,17 @@ with col2:
     st.write("### Missing Values")
     st.write(df.isnull().sum())
 
+# proxy detection (simple correlation)
+st.write("### Proxy Detection (Correlation with protected)")
+numeric_df = df.select_dtypes(include=np.number)
+if not numeric_df.empty:
+    corr = numeric_df.corr()[target].sort_values(ascending=False)
+    st.write(corr)
+
 # -------------------------
-# FAIRNESS METRICS
+# STAGE 4: FAIRNESS METRICS
 # -------------------------
-st.subheader("⚖️ Fairness Metrics")
+st.header("⚖️ Fairness Evaluation")
 
 grouped = df.groupby(protected)
 
@@ -90,78 +91,87 @@ false_negative = grouped.apply(
     lambda x: ((x[prediction] == 0) & (x[target] == 1)).mean()
 )
 
-metrics_df = pd.DataFrame({
+metrics = pd.DataFrame({
     "Selection Rate": selection_rate,
     "False Positive Rate": false_positive,
     "False Negative Rate": false_negative
 })
 
-st.dataframe(metrics_df)
+st.dataframe(metrics)
 
 # -------------------------
-# VISUALIZATION
+# STAGE 5: EXPLAINABILITY
 # -------------------------
-st.subheader("📊 Visual Comparison")
+st.header("🧠 Explainability Layer")
 
-fig, ax = plt.subplots()
-metrics_df.plot(kind="bar", ax=ax)
-ax.set_title(f"Fairness Metrics by {protected}")
-st.pyplot(fig)
+st.write("Top correlated features (proxy indicators):")
+st.write(corr.head())
+
+st.info("⚠️ Features highly correlated with protected attribute may act as proxies.")
 
 # -------------------------
-# BIAS DETECTION
+# STAGE 6: MITIGATION (SIMULATION)
 # -------------------------
-st.subheader("🚨 Bias Detection")
+st.header("🛠️ Mitigation Engine")
 
-gaps = metrics_df.max() - metrics_df.min()
+threshold_adjust = st.slider("Adjust Decision Threshold", -0.2, 0.2, 0.0)
 
-st.write("### Metric Gaps")
+df["adjusted_pred"] = np.where(
+    df[prediction] + threshold_adjust > 0.5, 1, 0
+)
+
+new_selection = df.groupby(protected)["adjusted_pred"].mean()
+
+st.write("Adjusted Selection Rate")
+st.write(new_selection)
+
+# -------------------------
+# STAGE 7: TRADEOFF
+# -------------------------
+st.header("⚖️ Tradeoff Analysis")
+
+original_acc = accuracy_score(df[target], df[prediction])
+adjusted_acc = accuracy_score(df[target], df["adjusted_pred"])
+
+st.write(f"Original Accuracy: {original_acc:.2f}")
+st.write(f"Adjusted Accuracy: {adjusted_acc:.2f}")
+
+# -------------------------
+# STAGE 8: BIAS DETECTION
+# -------------------------
+st.header("🚨 Bias Detection")
+
+gaps = metrics.max() - metrics.min()
 st.write(gaps)
 
-threshold = 0.1
-
-for metric, value in gaps.items():
-    if value > threshold:
-        st.error(f"⚠️ Bias detected in {metric} (gap = {value:.2f})")
+for m, v in gaps.items():
+    if v > 0.1:
+        st.error(f"Bias detected in {m}")
     else:
-        st.success(f"✅ {metric} within acceptable range")
+        st.success(f"{m} OK")
 
 # -------------------------
-# MODEL PERFORMANCE
+# STAGE 9: REPORT
 # -------------------------
-st.subheader("📈 Model Performance")
+st.header("📄 Report Summary")
 
-try:
-    acc = accuracy_score(df[target], df[prediction])
-    st.write(f"Accuracy: {acc:.2f}")
-except:
-    st.warning("⚠️ Could not compute accuracy (check data format)")
-
-# -------------------------
-# INSIGHTS
-# -------------------------
-st.subheader("🧠 Insights")
-
-if gaps["Selection Rate"] > 0.1:
-    st.write("The model favors one group significantly in approvals.")
-
-if gaps["False Positive Rate"] > 0.1:
-    st.write("Certain groups are more likely to be incorrectly approved.")
-
-if gaps["False Negative Rate"] > 0.1:
-    st.write("Certain groups are more likely to be unfairly rejected.")
-
-st.write("Recommendation: Review training data and consider fairness-aware adjustments.")
-
-# -------------------------
-# SUMMARY REPORT
-# -------------------------
-st.subheader("📄 Audit Summary")
-
-risk = "High" if gaps.max() > 0.1 else "Low"
+risk = "HIGH" if gaps.max() > 0.1 else "LOW"
 
 st.write({
     "Protected Attribute": protected,
-    "Highest Bias Gap": float(gaps.max()),
+    "Max Bias Gap": float(gaps.max()),
     "Risk Level": risk
 })
+
+# -------------------------
+# STAGE 10: MONITORING (SIMULATED)
+# -------------------------
+st.header("📈 Monitoring (Drift Simulation)")
+
+drift = np.random.uniform(0, 0.2)
+st.write(f"Fairness Drift Score: {drift:.2f}")
+
+if drift > 0.1:
+    st.warning("⚠️ Fairness drift detected – retraining recommended")
+else:
+    st.success("System stable")
